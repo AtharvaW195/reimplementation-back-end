@@ -49,7 +49,7 @@ Rails.application.routes.draw do
       resources :student_tasks do
         collection do
           get :list, action: :list
-          get :view
+          get 'show/:id', action: :show
         end
       end
 
@@ -77,16 +77,57 @@ Rails.application.routes.draw do
         end
       end
 
+      resources :review_mappings, only: [] do
+        collection do
+          post :assign_round_robin
+          post :assign_random
+          post :assign_from_csv
+          post :request_review_fewest
+          post :assign_calibration
+          post :assign_quiz
+          delete :delete_all_for_reviewer
+        end
+
+        member do
+          patch :submit_review
+          patch :unsubmit_review
+          patch :grade_review
+          delete :delete_mapping
+        end
+      end
+
       resources :signed_up_teams do
         collection do
           post '/sign_up', to: 'signed_up_teams#sign_up'
           post '/sign_up_student', to: 'signed_up_teams#sign_up_student'
         end
+        member do
+          post :create_advertisement
+          patch :update_advertisement
+          delete :remove_advertisement
+        end
+      end
+
+      resources :submitted_content do
+        collection do
+          get    :download
+          get    :list_files
+          delete :remove_hyperlink
+          post   :submit_file
+          post   :submit_hyperlink
+          post   :folder_action
+        end
       end
 
       resources :join_team_requests do
+        member do
+          patch 'accept', to: 'join_team_requests#accept'
+          patch 'decline', to: 'join_team_requests#decline'
+        end
         collection do
-          post 'decline/:id', to:'join_team_requests#decline'
+          get 'for_team/:team_id', to: 'join_team_requests#for_team'
+          get 'by_user/:user_id', to: 'join_team_requests#by_user'
+          get 'pending', to: 'join_team_requests#pending'
         end
       end
 
@@ -116,7 +157,9 @@ Rails.application.routes.draw do
         collection do
           get '/user/:user_id', to: 'participants#list_user_participants'
           get '/assignment/:assignment_id', to: 'participants#list_assignment_participants'
+          get '/teammates', to: 'participants#teammates'
           get '/:id', to: 'participants#show'
+          get '/:id/timeline', to: 'participants#timeline'
           post '/:authorization', to: 'participants#add'
           patch '/:id/:authorization', to: 'participants#update_authorization'
           delete '/:id', to: 'participants#destroy'
@@ -125,10 +168,10 @@ Rails.application.routes.draw do
 
       resources :student_teams, only: %i[create update] do
         collection do
-          get :view          
+          get :view
           get :mentor
           get :remove_participant
-          put '/leave', to: 'student_teams#leave_team'        
+          put '/leave', to: 'student_teams#leave_team'
         end
       end
 
@@ -152,9 +195,9 @@ Rails.application.routes.draw do
           post :add_participant
           delete :delete_participants
         end
-      end      
+      end
       resources :grades do
-        collection do        
+        collection do
           get '/:assignment_id/view_all_scores', to: 'grades#view_all_scores'
           patch '/:participant_id/assign_grade', to: 'grades#assign_grade'
           get '/:participant_id/edit', to: 'grades#edit'
@@ -162,6 +205,12 @@ Rails.application.routes.draw do
           get '/:assignment_id/view_our_scores', to: 'grades#view_our_scores'
           get '/:assignment_id/view_my_scores', to: 'grades#view_my_scores'
           get '/:participant_id/instructor_review', to: 'grades#instructor_review'
+        end
+      end
+      resources :responses do
+        member do
+          patch :submit         # PATCH /responses/:id/submit
+          patch :unsubmit       # PATCH /responses/:id/unsubmit
         end
       end
       resources :duties do

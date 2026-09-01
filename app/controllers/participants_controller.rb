@@ -13,7 +13,7 @@ class ParticipantsController < ApplicationController
     if participants.nil?
       render json: participants.errors, status: :unprocessable_entity
     else
-      render json: participants, status: :ok
+      render json: participants.map(&:attributes), status: :ok
     end
   end
 
@@ -118,6 +118,25 @@ class ParticipantsController < ApplicationController
     end
   end
 
+  # Returns all teammates grouped by course for the current user.
+  # GET /participants/teammates
+  def teammates
+    render json: AssignmentParticipant.all_teammates(current_user), status: :ok
+  end
+
+  # Returns the timeline of due dates and submitted review activity for a participant.
+  # GET /participants/:id/timeline
+  def timeline
+    participant = AssignmentParticipant.find_by(id: params[:id])
+    if participant.nil?
+      render json: { error: 'Participant not found' }, status: :not_found
+    elsif participant.user_id != current_user.id
+      render json: { error: 'Unauthorized' }, status: :forbidden
+    else
+      render json: participant.timeline_events, status: :ok
+    end
+  end
+
   # Permitted parameters for creating a Participant object
   def participant_params
     params.require(:participant).permit(:user_id, :assignment_id, :authorization, :can_submit,
@@ -131,8 +150,7 @@ class ParticipantsController < ApplicationController
   # Filters participants based on the provided user
   # Returns participants ordered by their IDs
   def filter_user_participants(user)
-    participants = Participant.all
-    participants = participants.where(user_id: user.id) if user
+    participants = Participant.where(user_id: user.id) if user
     participants.order(:id)
   end
 
