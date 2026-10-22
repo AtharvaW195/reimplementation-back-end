@@ -142,6 +142,102 @@ RSpec.describe Team, type: :model do
     end
   end
 
+  shared_examples 'admission input handling' do
+    # Create the other registration first so an unscoped User lookup picks the wrong record.
+    it 'resolves a User to the registration belonging to the target parent' do
+      user = create_user
+      other_registration = create_participant(create_parent(parent_kind), user: user)
+      registration = create_participant(parent, user: user)
+      target = team
+      result = nil
+
+      expect { result = target.add_member(user) }.to change(TeamsParticipant, :count).by(1)
+
+      expect(result).to eq(success: true)
+      expect(target.teams_participants.pluck(:participant_id, :user_id)).to eq(
+        [[registration.id, user.id]]
+      )
+      expect(target.participants).to contain_exactly(registration)
+      expect(TeamsParticipant.exists?(participant_id: other_registration.id)).to be(false)
+    end
+
+    it 'rejects a User with no participant registration' do
+      user = create_user
+      target = team
+      result = nil
+
+      expect { result = target.add_member(user) }.not_to change(TeamsParticipant, :count)
+
+      expect(result.fetch(:success)).to be(false)
+      expect(result.fetch(:error)).to include("not a participant in this #{parent_kind}")
+      expect(target.participants).to be_empty
+    end
+
+    it 'rejects a User registered only under another parent' do
+      other_registration = create_participant(create_parent(parent_kind))
+      target = team
+      result = nil
+
+      expect { result = target.add_member(other_registration.user) }.not_to change(TeamsParticipant, :count)
+
+      expect(result.fetch(:success)).to be(false)
+      expect(result.fetch(:error)).to include("not a participant in this #{parent_kind}")
+      expect(target.participants).to be_empty
+    end
+
+    it 'rejects a participant object belonging to another parent' do
+      candidate = create_participant(create_parent(parent_kind))
+      target = team
+      result = nil
+
+      expect { result = target.add_member(candidate) }.not_to change(TeamsParticipant, :count)
+
+      expect(result.fetch(:success)).to be(false)
+      expect(result.fetch(:error)).to include("not a participant in this #{parent_kind}")
+      expect(target.participants).to be_empty
+    end
+
+    it 'rejects an unsaved participant without persisting it' do
+      candidate = participant.dup
+      target = team
+      result = nil
+      original_participant_count = Participant.count
+
+      expect { result = target.add_member(candidate) }.not_to change(TeamsParticipant, :count)
+
+      expect(result.fetch(:success)).to be(false)
+      expect(result.fetch(:error)).to include("not a participant in this #{parent_kind}")
+      expect(candidate).to be_new_record
+      expect(Participant.count).to eq(original_participant_count)
+      expect(target.participants).to be_empty
+    end
+
+    it 'rejects the wrong participant subtype' do
+      other_kind = parent_kind == :assignment ? :course : :assignment
+      candidate = create_participant(create_parent(other_kind))
+      target = team
+      expected_type = parent_kind == :assignment ? AssignmentParticipant : CourseParticipant
+      result = nil
+
+      expect { result = target.add_member(candidate) }.not_to change(TeamsParticipant, :count)
+
+      expect(result.fetch(:success)).to be(false)
+      expect(result.fetch(:error)).to include('Expected a User or', expected_type.name)
+      expect(target.participants).to be_empty
+    end
+
+    it 'returns an input error for nil without creating membership' do
+      target = team
+      result = nil
+
+      expect { result = target.add_member(nil) }.not_to change(TeamsParticipant, :count)
+
+      expect(result.fetch(:success)).to be(false)
+      expect(result.fetch(:error)).to include('Expected a User or')
+      expect(target.participants).to be_empty
+    end
+  end
+
   shared_examples 'registration eligibility' do
     # Verifies registration without conflicting membership satisfies eligibility.
     it 'accepts a registered unassigned participant' do
@@ -207,6 +303,7 @@ RSpec.describe Team, type: :model do
       include_examples 'participant membership'
       include_examples 'parent-scoped membership'
       include_examples 'direct participant admission'
+      include_examples 'admission input handling'
       include_examples 'registration eligibility'
       include_examples 'ordinary member removal'
     end

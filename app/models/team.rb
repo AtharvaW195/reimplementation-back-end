@@ -31,27 +31,19 @@ class Team < ApplicationRecord
     users.count
   end
   
-  # Returns the maximum allowed team size
+  # Course teams have no configured limit; mentored teams inherit assignment limits.
   def max_size
-    if is_a?(AssignmentTeam) && assignment&.max_team_size
-      assignment.max_team_size
-    elsif is_a?(CourseTeam) && course&.max_team_size
-      course.max_team_size
-    else
-      nil
-    end
+    return nil unless is_a?(AssignmentTeam)
+
+    assignment&.max_team_size
   end
   
   def full?
-    current_size = participants.count
+    # Use the same limit for reporting and admission; nil means uncapped.
+    limit = max_size
+    return false if limit.nil?
 
-    # assignment teams use the column max_team_size
-    if is_a?(AssignmentTeam) && assignment&.max_team_size
-      return current_size >= assignment.max_team_size
-    end
-
-    # course teams never fill up by default
-    false
+    participants.count >= limit
   end
 
   # Checks if the given participant is already on any team for the associated assignment or course.
@@ -73,19 +65,23 @@ class Team < ApplicationRecord
 
   # Adds participant in the team
   def add_member(participant_or_user)
-    participant =
-      if participant_or_user.is_a?(AssignmentParticipant) || participant_or_user.is_a?(CourseParticipant)
-        participant_or_user
-      elsif participant_or_user.is_a?(User)
-        participant_type = is_a?(AssignmentTeam) ? AssignmentParticipant : CourseParticipant
-        participant_type.find_by(user_id: participant_or_user.id, parent_id: parent_id)
-      else
-        nil
-      end
+    context = membership_context
+    return { success: false, error: "Team must belong to Assignment or Course" } unless context
 
-    # If participant wasn't found or built correctly
-    return { success: false, error: "#{participant_or_user.name} is not a participant in this #{is_a?(AssignmentTeam) ? 'assignment' : 'course'}" } if participant.nil?
+    scope, participant_type, label = context
+    return { success: false, error: "Team parent is missing" } unless scope
 
+    unless participant_or_user.is_a?(User) || participant_or_user.is_a?(participant_type)
+      return { success: false, error: "Expected a User or #{participant_type.name}" }
+    end
+
+    # Direct participant input must satisfy the same parent scope as a User lookup.
+    participant = resolve_participant(participant_or_user, participant_type, scope)
+    unless participant&.persisted? && participant.parent_id == scope.id
+      return { success: false, error: "User is not a participant in this #{label}" }
+    end
+
+    # Sibling membership is checked by eligibility, not here: transfers add before removing.
     return { success: false, error: "Participant already on the team" } if participants.exists?(id: participant.id)
     return { success: false, error: "Unable to add participant: team is at full capacity." } if full?
 
@@ -100,7 +96,8 @@ class Team < ApplicationRecord
     else
       { success: false, error: team_participant.errors.full_messages.join(', ') }
     end
-  rescue StandardError => e
+  # Return database failures to callers while allowing programming errors to surface.
+  rescue ActiveRecord::ActiveRecordError => e
     { success: false, error: e.message }
   end
 
@@ -112,31 +109,21 @@ class Team < ApplicationRecord
     # retract all the invitations the participant sent (if any) while being on the this team
     participant.retract_sent_invitations
 
-    # Remove the join record if it exists
+    # Participant#team reads this join; this method no longer maintains legacy team_id.
     tp = TeamsParticipant.find_by(team_id: id, participant_id: participant.id)
     tp&.destroy
     
-    # Update the participant's team_id column - will remove the team reference inside participants table later. keeping it for now
-    # this will remove the reference only if the participant's current team is the same team removing the participant
-    if participant.team_id==id
-      participant.update!(team_id: nil)
-    end
-
     # If no participants remain after removal, delete the team
     destroy if participants.empty?
   end
 
   # Determines whether a given participant is eligible to join the team.
   def can_participant_join_team?(participant)
-    # figure out whether we’re in an Assignment or a Course context
-    scope, participant_type, label =
-      if is_a?(AssignmentTeam)
-        [assignment, AssignmentParticipant, "assignment"]
-      elsif is_a?(CourseTeam)
-        [course, CourseParticipant, "course"]
-      else
-        return { success: false, error: "Team must belong to Assignment or Course" }
-      end
+    context = membership_context
+    return { success: false, error: "Team must belong to Assignment or Course" } unless context
+
+    scope, participant_type, label = context
+    return { success: false, error: "Team parent is missing" } unless scope
 
     # Check if the user is already part of any team for this assignment or course
     if participant_on_team?(participant)
@@ -159,6 +146,24 @@ class Team < ApplicationRecord
   end
 
   private
+
+  # Keep admission and eligibility aligned; MentoredTeam inherits AssignmentTeam.
+  def membership_context
+    if is_a?(AssignmentTeam)
+      [assignment, AssignmentParticipant, "assignment"]
+    elsif is_a?(CourseTeam)
+      [course, CourseParticipant, "course"]
+    end
+  end
+
+  def resolve_participant(participant_or_user, participant_type, scope)
+    if participant_or_user.is_a?(User)
+      # A user can have registrations under multiple parents; select this team's context.
+      participant_type.find_by(user_id: participant_or_user.id, parent_id: scope.id)
+    else
+      participant_or_user
+    end
+  end
 
   def release_topics_if_empty
     return unless participants.empty?
