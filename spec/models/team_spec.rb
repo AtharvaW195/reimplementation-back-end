@@ -192,7 +192,7 @@ RSpec.describe Team, type: :model do
 
         result = assignment_team.can_participant_join_team?(participant)
         expect(result[:success]).to be false
-        expect(result[:error]).to match(/already assigned/)
+        expect(result[:error]).to eq('Participant already belongs to a team under this parent')
       end
 
       it 'rejects a participant registered under a different assignment' do
@@ -201,7 +201,7 @@ RSpec.describe Team, type: :model do
 
         result = assignment_team.can_participant_join_team?(participant)
         expect(result[:success]).to be false
-        expect(result[:error]).to match(/not a participant/)
+        expect(result[:error]).to eq('Participant is not registered for this team')
       end
 
       it 'allows a properly registered, not-yet-teamed participant' do
@@ -225,7 +225,7 @@ RSpec.describe Team, type: :model do
 
         result = course_team.can_participant_join_team?(participant)
         expect(result[:success]).to be false
-        expect(result[:error]).to match(/already assigned/)
+        expect(result[:error]).to eq('Participant already belongs to a team under this parent')
       end
 
       it 'rejects a participant registered under a different course' do
@@ -234,7 +234,7 @@ RSpec.describe Team, type: :model do
 
         result = course_team.can_participant_join_team?(participant)
         expect(result[:success]).to be false
-        expect(result[:error]).to match(/not a participant/)
+        expect(result[:error]).to eq('Participant is not registered for this team')
       end
 
       it 'allows a properly registered, not-yet-teamed course participant' do

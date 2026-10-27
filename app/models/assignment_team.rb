@@ -11,6 +11,15 @@ class AssignmentTeam < Team
   # Delegation to avoid Law of Demeter violations
   delegate :path, to: :assignment, prefix: true
 
+  # MentoredTeam inherits the same assignment capacity policy.
+  def max_size
+    assignment&.max_team_size
+  end
+
+  def registered_participants
+    assignment ? assignment.participants : AssignmentParticipant.none
+  end
+
   def hyperlinks
     submitted_hyperlinks.blank? ? [] : YAML.safe_load(submitted_hyperlinks)
   end
@@ -78,12 +87,13 @@ class AssignmentTeam < Team
   def copy_to_course_team(course)
     course_team = CourseTeam.new(
       name: "#{name} (Course)",              # Appends "(Course)" to the team name
-      max_team_size: max_team_size,         # Preserves original max team size
       course: course                         # Associates new team with the given course
     )
     if course_team.save
-      team_members.each do |member|
-        course_team.add_member(member.user)  # Copies each member to the new course team
+      participants.each do |participant|
+        # Membership in the source assignment is not registration in the destination course.
+        course_participant = course_team.registered_participants.find_by(user_id: participant.user_id)
+        course_team.add_member(course_participant)
       end
     end
     course_team   # Returns the newly created course team object
@@ -216,6 +226,10 @@ class AssignmentTeam < Team
   end
 
   private
+
+  def teams_in_parent
+    assignment ? assignment.teams : AssignmentTeam.none
+  end
 
   # Validates that the team is an AssignmentTeam or a subclass (e.g., MentoredTeam)
   def validate_assignment_team_type
