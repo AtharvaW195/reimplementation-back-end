@@ -78,3 +78,9 @@ group :development do
   # Speed up commands on slow machines / big apps [https://github.com/rails/spring]
   gem 'spring'
 end
+
+# Keep the experiment's mutation generator and RSpec adapter on the same version.
+group :test do
+  gem 'mutant', '0.17.0', require: false
+  gem 'mutant-rspec', '0.17.0', require: false
+end

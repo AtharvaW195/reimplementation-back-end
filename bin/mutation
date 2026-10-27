@@ -1,0 +1,99 @@
+# frozen_string_literal: true
+
+require 'digest'
+require 'fileutils'
+require 'json'
+require 'open3'
+require 'time'
+require_relative '../config/mutation/experiment'
+
+root = File.expand_path('..', __dir__)
+Dir.chdir(root)
+name, suite, mode = ARGV
+modes = %w[inspect baseline pilot run].freeze
+unless ARGV.length == 3 && modes.include?(mode)
+  abort 'Usage: ruby bin/mutation <experiment> <suite> <inspect|baseline|pilot|run>'
+end
+begin
+  experiment = MutationExperiment.load(name, suite)
+rescue ArgumentError, KeyError, Psych::Exception => e
+  abort e.message
+end
+abort 'This experiment has no pilot method configured' if mode == 'pilot' && !experiment['pilot']
+usage = ENV.fetch('MUTANT_USAGE', '')
+abort 'Set MUTANT_USAGE=opensource (eligible public project) or commercial (licensed)' unless %w[opensource commercial].include?(usage)
+abort 'DATABASE_URL must point to your Docker test database configuration' unless ENV['DATABASE_URL']
+
+# One experiment at a time: the existing DatabaseCleaner setup shares a test database.
+FileUtils.mkdir_p('tmp')
+lock = File.open('tmp/mutation-experiment.lock', File::RDWR | File::CREAT, 0o644)
+abort 'Another mutation experiment is running' unless lock.flock(File::LOCK_EX | File::LOCK_NB)
+
+run_id = "#{Time.now.utc.strftime('%Y%m%dT%H%M%S%6NZ')}-#{suite}-#{mode}"
+output = File.join('coverage/mutation', name, run_id)
+FileUtils.mkdir_p(output)
+inputs = ([experiment.fetch('source')] + experiment.fetch('suites').values.flatten +
+          %w[Gemfile Gemfile.lock .mutant.yml config/mutation/boot.rb config/mutation/hooks.rb
+             config/mutation/experiment.rb config/mutation/experiments.yml
+             spec/spec_helper.rb spec/rails_helper.rb config/database.yml bin/mutation]).uniq
+hashes = inputs.to_h { |path| [path, Digest::SHA256.file(path).hexdigest] }
+commit, commit_status = Open3.capture2('git', 'rev-parse', 'HEAD')
+manifest = {
+  experiment: experiment, suite: suite, mode: mode, started_at: Time.now.utc.iso8601, ruby: RUBY_DESCRIPTION,
+  git_commit: commit_status.success? ? commit.strip : nil,
+  input_sha256: hashes, commands: [], completed: false
+}
+save_manifest = -> { File.write(File.join(output, 'manifest.json'), JSON.pretty_generate(manifest)) }
+save_manifest.call
+environment = {
+  'RAILS_ENV' => 'test', 'MUTATION_EXPERIMENT' => name, 'MUTATION_SUITE' => suite,
+  'COVERAGE_STARTED' => 'true', 'DISABLE_SPRING' => '1',
+  'SPEC_OPTS' => nil, 'RSPEC_OPTS' => nil
+}
+common = [
+  '--usage', usage, '--jobs', '1', '--selection', 'expression',
+  '--integration-argument=--fail-fast', '--integration-argument=--seed',
+  '--integration-argument=0'
+] + experiment.fetch('specs').map { |path| "--integration-argument=#{path}" }
+execute = lambda do |label, subcommands, subjects = experiment.fetch('subjects')|
+  command = ['bundle', 'exec', 'mutant', *subcommands, *common, *subjects]
+  puts "\n#{label}: #{command.join(' ')}"
+  status = nil
+  File.open(File.join(output, "#{label}.log"), 'w') do |log|
+    Open3.popen2e(environment, *command) do |stdin, stream, process|
+      stdin.close
+      stream.each_line { |line| print line; log.write(line) }
+      status = process.value
+    end
+  end
+  manifest[:commands] << { label: label, argv: command, exit_status: status.exitstatus, signal: status.termsig }
+  save_manifest.call
+  status.success?
+end
+
+success = case mode
+          when 'inspect'
+            execute.call('subjects', %w[environment subject list]) &&
+              execute.call('environment', %w[environment show])
+          when 'baseline'
+            # Mutant 0.17's root shortcut is `test`, not `test run`.
+            # Test commands treat trailing arguments as RSpec inputs, not subjects.
+            execute.call('baseline', %w[environment test run], [])
+          else
+            # Never interpret mutant failures unless the unmutated suite passes this runner.
+            if execute.call('baseline', %w[environment test run], [])
+              subjects = mode == 'pilot' ? [experiment.fetch('pilot')] : experiment.fetch('subjects')
+              execute.call('mutations', ['run'], subjects)
+            else
+              warn 'Baseline failed; mutation phase was not started.'
+              false
+            end
+          end
+manifest[:completed] = true
+manifest[:finished_at] = Time.now.utc.iso8601
+manifest[:inputs_unchanged] = hashes.all? { |path, hash| Digest::SHA256.file(path).hexdigest == hash }
+save_manifest.call
+puts "\nEvidence saved in #{output}"
+warn 'Inputs changed during the run; do not use this result for comparison.' unless manifest[:inputs_unchanged]
+warn 'Nonzero status can mean surviving mutations OR a setup failure; inspect the logs.' unless success
+exit(success && manifest[:inputs_unchanged] ? 0 : 1)

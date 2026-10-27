@@ -1,0 +1,29 @@
+---
+# Add another entry beside team to reuse the runner for another class.
+# target: Ruby class/module name (including namespace, e.g. Reports::Summary).
+# source: file containing that class, recorded in the evidence manifest.
+# suites: labels mapped to one or more explicit spec files (no directories/globs).
+# subjects: optional exact method expressions; omit to select the target constant.
+# pilot: optional single method for a small trial run.
+experiments:
+  team:
+    target: Team
+    source: app/models/team.rb
+    pilot: Team#full?
+    subjects:
+      - Team#has_member?
+      - Team#team_size
+      - Team#max_size
+      - Team#full?
+      - Team#participant_on_team?
+      - Team#add_member
+      - Team#remove_member
+      - Team#can_participant_join_team?
+      - Team#membership_context
+      - Team#resolve_participant
+      - Team#release_topics_if_empty
+    suites:
+      human:
+        - spec/models/team_spec.rb
+      revised:
+        - spec/models/team_model_spec.rb

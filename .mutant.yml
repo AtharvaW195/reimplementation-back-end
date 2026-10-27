@@ -1,0 +1,22 @@
+---
+# Bootstrap loads rails_helper before RSpec normally adds this load path.
+includes:
+  - spec
+requires:
+  - ./config/mutation/boot
+hooks:
+  - config/mutation/hooks.rb
+integration:
+  name: rspec
+jobs: 1
+fail_fast: false
+selection:
+  strategy: expression
+mutation:
+  operators: light
+  timeout: 120.0
+coverage_criteria:
+  timeout: false
+  process_abort: false
+  test_result: true
+# Target expressions and spec paths come from config/mutation/experiments.yml.
