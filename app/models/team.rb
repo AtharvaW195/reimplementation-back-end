@@ -31,54 +31,28 @@ class Team < ApplicationRecord
     users.count
   end
   
-  # Course teams have no configured limit; mentored teams inherit assignment limits.
+  # Concrete team types supply their parent collections and capacity policy.
   def max_size
-    return nil unless is_a?(AssignmentTeam)
+    raise NotImplementedError, "#{self.class} must define max_size"
+  end
 
-    assignment&.max_team_size
+  # Returns participants assigned to this team's assignment or course.
+  def assigned_participants
+    raise NotImplementedError, "#{self.class} must define assigned_participants"
   end
   
   def full?
     # Use the same limit for reporting and admission; nil means uncapped.
-    limit = max_size
-    return false if limit.nil?
+    maximum_team_size = max_size
+    return false if maximum_team_size.nil?
 
-    participants.count >= limit
+    participants.count >= maximum_team_size
   end
 
-  # Checks if the given participant is already on any team for the associated assignment or course.
-  def participant_on_team?(participant)
-    # pick the correct “scope” (assignment or course) based on this team’s class
-    scope =
-      if is_a?(AssignmentTeam)
-        assignment
-      elsif is_a?(CourseTeam)
-        course
-      end
-
-    return false unless scope
-
-    # “scope.teams” includes this team itself plus any sibling teams;
-    # check whether any of those teams already has this participant
-    scope.teams.any? { |team| team.participants.include?(participant) }
-  end
-
-  # Adds participant in the team
-  def add_member(participant_or_user)
-    context = membership_context
-    return { success: false, error: "Team must belong to Assignment or Course" } unless context
-
-    scope, participant_type, label = context
-    return { success: false, error: "Team parent is missing" } unless scope
-
-    unless participant_or_user.is_a?(User) || participant_or_user.is_a?(participant_type)
-      return { success: false, error: "Expected a User or #{participant_type.name}" }
-    end
-
-    # Direct participant input must satisfy the same parent scope as a User lookup.
-    participant = resolve_participant(participant_or_user, participant_type, scope)
-    unless participant&.persisted? && participant.parent_id == scope.id
-      return { success: false, error: "User is not a participant in this #{label}" }
+  # Adds a participant; callers must find the appropriate participant before admission.
+  def add_member(participant)
+    unless assigned_participant?(participant)
+      return { success: false, error: 'Participant is not assigned to this team' }
     end
 
     # Sibling membership is checked by eligibility, not here: transfers add before removing.
@@ -110,8 +84,9 @@ class Team < ApplicationRecord
     participant.retract_sent_invitations
 
     # Participant#team reads this join; this method no longer maintains legacy team_id.
-    tp = TeamsParticipant.find_by(team_id: id, participant_id: participant.id)
-    tp&.destroy
+    # This membership record links the participant to this team.
+    team_membership = teams_participants.find_by(participant_id: participant.id)
+    team_membership&.destroy
     
     # If no participants remain after removal, delete the team
     destroy if participants.empty?
@@ -119,25 +94,16 @@ class Team < ApplicationRecord
 
   # Determines whether a given participant is eligible to join the team.
   def can_participant_join_team?(participant)
-    context = membership_context
-    return { success: false, error: "Team must belong to Assignment or Course" } unless context
-
-    scope, participant_type, label = context
-    return { success: false, error: "Team parent is missing" } unless scope
-
-    # Check if the user is already part of any team for this assignment or course
-    if participant_on_team?(participant)
-      return { success: false, error: "This user is already assigned to a team for this #{label}" }
+    unless assigned_participant?(participant)
+      return { success: false, error: 'Participant is not assigned to this team' }
     end
 
-    # Check if the user is a registered participant for this assignment or course
-    registered = participant_type.find_by(
-      user_id: participant.user_id,
-      parent_id: scope.id
+    # Check this team and other teams in the same assignment or course.
+    if TeamsParticipant.exists?(
+      team_id: teams_in_parent.select(:id),
+      participant_id: participant.id
     )
-
-    unless registered
-      return { success: false, error: "#{participant.user.name} is not a participant in this #{label}" }
+      return { success: false, error: 'Participant already belongs to a team.' }
     end
 
     # All checks passed; participant is eligible to join the team
@@ -147,22 +113,14 @@ class Team < ApplicationRecord
 
   private
 
-  # Keep admission and eligibility aligned; MentoredTeam inherits AssignmentTeam.
-  def membership_context
-    if is_a?(AssignmentTeam)
-      [assignment, AssignmentParticipant, "assignment"]
-    elsif is_a?(CourseTeam)
-      [course, CourseParticipant, "course"]
-    end
+  # Returns teams in the same assignment or course, including this team.
+  def teams_in_parent
+    raise NotImplementedError, "#{self.class} must define teams_in_parent"
   end
 
-  def resolve_participant(participant_or_user, participant_type, scope)
-    if participant_or_user.is_a?(User)
-      # A user can have registrations under multiple parents; select this team's context.
-      participant_type.find_by(user_id: participant_or_user.id, parent_id: scope.id)
-    else
-      participant_or_user
-    end
+  def assigned_participant?(participant)
+    participant.is_a?(Participant) && participant.valid? &&
+      assigned_participants.exists?(id: participant.id)
   end
 
   def release_topics_if_empty
